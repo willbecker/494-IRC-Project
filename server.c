@@ -22,6 +22,13 @@ struct user {
     struct timespec last_alive;
 };
 
+int set_nonblock(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    flags |= O_NONBLOCK;
+    fcntl(fd, F_SETFL, flags);
+    return 0;
+}
 int find_free_slot(struct user* user_list)
 {
     int slot = 0;
@@ -54,6 +61,7 @@ int accept_connections(int socket_fd, struct user* user_list)
             return -1;
         }
 
+        set_nonblock(connection_fd);
         user_list[slot].id = slot+1;
         user_list[slot].fd = connection_fd;
         clock_gettime(CLOCK_MONOTONIC, &user_list[slot].last_alive);
@@ -87,9 +95,7 @@ int main()
     }
 
     // Set the non-blocking flag for socket_fd
-    int flags = fcntl(socket_fd, F_GETFL, 0);
-    flags |= O_NONBLOCK;
-    fcntl(socket_fd, F_SETFL, flags);
+    set_nonblock(socket_fd);
 
     // Setup IP address and port number.
     server_addr.sin_family = AF_INET;
@@ -115,6 +121,7 @@ int main()
     while(1){
         struct timespec start, end, time_taken;
         clock_gettime(CLOCK_MONOTONIC, &start); 
+        char message[16];
 
         // Handle any new incoming connections if they exsist
         struct pollfd fds[1] = {socket_fd, POLLIN, 0};
@@ -128,6 +135,14 @@ int main()
                 struct timespec time_since_last_alive = {start.tv_sec - user_list[i].last_alive.tv_sec, 0};
                 if(time_since_last_alive.tv_sec >= TIMEOUT){
                     disconnect(i, user_list);
+                }
+            }
+        }
+
+        for(int i = 0; i < CLIENT_MAX; i++){
+            if(user_list[i].id == i+1){
+                if(read(user_list[i].fd, message, sizeof(message)) != -1){
+                    printf("%s", message);
                 }
             }
         }

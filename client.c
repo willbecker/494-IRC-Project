@@ -1,26 +1,44 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <stdio.h>
+#include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <poll.h>
+#include "structs.h"
 #define MSG_LENGTH 50
 #define PORT 8888
 
+
 int recieve_messages(int socket_fd)
 {
-    struct pollfd fds[1] = {socket_fd, POLLIN, 0};
+    char message[MSG_LENGTH] = {0};
     while(1){
-        if (poll(fds, 1, -1) > 0){
-            printf("new message\n");
+        int ret = read(socket_fd, message, sizeof(message));
+        if(ret == 0){
+            printf("Dissconected from server");
+        }
+        else if(ret > 0){
+            printf("%s\n", message);
         }
     }
 }
-
 void send_messages(int socket_fd)
 {
+    // setup name
+    int n = 0;
     char message[MSG_LENGTH] = {0};
-    int n;
+    char name[16] = {0};
+    printf("Enter your name: ");
+    while((name[n++] = getchar()) != '\n');
+    struct message_header header = {SETNAME, 16};
+    struct set_name name_msg;
+    name_msg.header = header;
+    strcpy(name_msg.name, name);
+    serialize_set_name(name_msg, message);
+    write(socket_fd, message, sizeof(message));
+    
+    // wait for user input
     while(1){
         n = 0;
         printf(": ");
@@ -41,6 +59,7 @@ int main()
         return 1;
     }
 
+
     // Setup IP address and port number.
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
@@ -54,6 +73,11 @@ int main()
         printf("Failed to connect to server\n");
         return 1;
     }
+
+    // Set the non-blocking flag for socket_fd
+    int flags = fcntl(socket_fd, F_GETFL, 0);
+    flags |= O_NONBLOCK;
+    fcntl(socket_fd, F_SETFL, flags);
 
     pid_t pid = fork();
     if(pid < 0){
