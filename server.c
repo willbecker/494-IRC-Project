@@ -1,19 +1,10 @@
-#include <netdb.h>
 #include <netinet/in.h>
-#include <sys/socket.h>
 #include <sys/types.h>
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <time.h>
 #include <errno.h>
+#include "structs.h"
 #define PORT 8888
 #define BACKLOG_SIZE 20
 #define CLIENT_MAX 10
-#define UPDATE_INTERVAL 1000 //number of milliseconds between each update
-#define TIMEOUT 5
 
 struct user {
     int id;
@@ -21,6 +12,50 @@ struct user {
     int fd;
     struct timespec last_alive;
 };
+
+int check_title(char *title) {
+    int len = strlen(title);
+    int is_alphanum = 1;
+    if(0 < len < 16){
+        for(int i = 0; i < 16; i++){
+            if(!(48 <= (int)title[i] <= 122)) {
+                is_alphanum = 0;
+                break;
+            }
+        }
+        if(is_alphanum)
+            return 0;
+    }
+    return -1;
+}
+
+int keep_alive(struct user *client) {
+    char *len = strtok(NULL, ",");
+    char keep_alive_msg[MSG_LENGTH] = {0};
+    if(len == NULL){
+        return WRONG_LENGTH;
+    } else if(atoi(len) == 0) {
+        sprintf(keep_alive_msg, "%i,%i", KEEPALIVE, 0);
+        clock_gettime(CLOCK_MONOTONIC, &client->last_alive);
+        write(client->fd, keep_alive_msg, sizeof(keep_alive_msg));
+        return 0;
+    }
+    return WRONG_LENGTH;
+}
+
+int set_name(struct user *client) {
+    char *len = strtok(NULL, ",");
+    char *name = strtok(NULL, ",");
+    uint32_t length;
+    if((length = atoi(len)) != 16){
+        return WRONG_LENGTH;
+    } else if(check_title(name) != 0){
+        return BAD_NAME;
+    }
+
+    strcpy(client->name, name);
+    return 0;
+}    
 
 int set_nonblock(int fd)
 {
@@ -72,18 +107,21 @@ int accept_connections(int socket_fd, struct user* user_list)
     
 }
 
-int disconnect(int slot, struct user* user_list)
+int disconnect(struct user *user_list, uint8_t error)
 {
-    user_list[slot].id = 0;
-    user_list[slot].fd = 0;
-    strcpy(user_list[slot].name, "");
-    printf("User disconnected on slot %i\n", slot);
+    printf("User disconnected on slot %i\n", user_list->id - 1);
+    user_list->id = 0;
+    user_list->fd = 0;
+    strcpy(user_list->name, "");
 }
 
 int main()
 {
     struct sockaddr_in server_addr = {0};
     struct user user_list[CLIENT_MAX] = {0};
+    struct timespec start, end, time_taken;
+    struct timespec time_since_last_alive;
+    char message[MSG_LENGTH];
 
     // Create socket and assingn it to a file descripter
     int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -96,6 +134,9 @@ int main()
 
     // Set the non-blocking flag for socket_fd
     set_nonblock(socket_fd);
+
+    // Prevent broken pipe from crashing the program
+    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
 
     // Setup IP address and port number.
     server_addr.sin_family = AF_INET;
@@ -119,9 +160,7 @@ int main()
     }
 
     while(1){
-        struct timespec start, end, time_taken;
         clock_gettime(CLOCK_MONOTONIC, &start); 
-        char message[16];
 
         // Handle any new incoming connections if they exsist
         struct pollfd fds[1] = {socket_fd, POLLIN, 0};
@@ -129,20 +168,38 @@ int main()
             accept_connections(socket_fd, user_list);
         }
 
-        // Time out client if it sent a recent keep alive request
+
+        // Disconnect any client that has not sent a recent keep 
+        // alive massage to the server.
         for(int i = 0; i < CLIENT_MAX; i++){
             if(user_list[i].id != 0){
-                struct timespec time_since_last_alive = {start.tv_sec - user_list[i].last_alive.tv_sec, 0};
-                if(time_since_last_alive.tv_sec >= TIMEOUT){
-                    disconnect(i, user_list);
+                time_since_last_alive.tv_sec = start.tv_sec 
+                                             - user_list[i].last_alive.tv_sec;
+                if(time_since_last_alive.tv_sec >= TIMEOUT_LEN){
+                //    disconnect(&(user_list[i]), TIMEOUT);
                 }
             }
         }
 
+        // Handle messages from all clients
+        int error = 0;
         for(int i = 0; i < CLIENT_MAX; i++){
             if(user_list[i].id == i+1){
-                if(read(user_list[i].fd, message, sizeof(message)) != -1){
-                    printf("%s", message);
+                if(read(user_list[i].fd, message, sizeof(message)) != -1
+                   && message != NULL){
+                    switch((uint8_t)atoi(strtok(message, ","))){
+                        case KEEPALIVE :
+                            error = keep_alive(&user_list[i]);
+                            break;
+                        case SETNAME :
+                            error = set_name(&user_list[i]);
+                            break;
+                        default :
+                            printf("Recieved message with invalid type from client %i\n", i+1);
+                    }
+                    if(error){
+                        disconnect(&user_list[i], error);
+                    }
                 }
             }
         }

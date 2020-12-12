@@ -1,26 +1,54 @@
-#include <netdb.h>
 #include <arpa/inet.h>
-#include <sys/socket.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
 #include "structs.h"
-#define MSG_LENGTH 50
 #define PORT 8888
+
 
 
 int recieve_messages(int socket_fd)
 {
     char message[MSG_LENGTH] = {0};
+    char keep_alive_msg[MSG_LENGTH] = {0};
+    struct timespec start, end, time_taken;
+    struct timespec last_alive, time_since_last_alive;
+    clock_gettime(CLOCK_MONOTONIC, &last_alive); 
+    sprintf(keep_alive_msg, "%i,%i", KEEPALIVE, 0);
+
     while(1){
-        int ret = read(socket_fd, message, sizeof(message));
-        if(ret == 0){
-            printf("Dissconected from server");
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        // Check if we have timed out from the server
+        time_since_last_alive.tv_sec = start.tv_sec - last_alive.tv_sec;
+        if(time_since_last_alive.tv_sec >= TIMEOUT_LEN){
+            printf("Connection to server timed out\n");
+            return 0;
         }
-        else if(ret > 0){
-            printf("%s\n", message);
+        
+        // Send keepalive message to the server
+        write(socket_fd, keep_alive_msg, sizeof(keep_alive_msg));
+
+        // Handle messages from the server
+        int error = 0;
+        bzero(message, sizeof(message));
+        if(read(socket_fd, message, sizeof(message)) != -1 && message[0] != '\0'){
+            switch((uint8_t)atoi(strtok(message, ","))){
+                case KEEPALIVE :
+                    clock_gettime(CLOCK_MONOTONIC, &last_alive); 
+                    break;
+                default :
+                    printf("Recieved message with invalid type from server\n");
+            }
+            if(error){
+                printf("Error: %i\n", error);
+            }
         }
+
+        // Maintain maximum update rate
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        time_taken.tv_sec = end.tv_sec - start.tv_sec;
+        time_taken.tv_nsec = end.tv_nsec - start.tv_nsec;
+        struct timespec sleep_time = {0, UPDATE_INTERVAL * 1000000 - time_taken.tv_nsec};
+        if(time_taken.tv_sec < UPDATE_INTERVAL)
+            nanosleep(&sleep_time, NULL);
     }
 }
 void send_messages(int socket_fd)
@@ -79,20 +107,18 @@ int main()
     flags |= O_NONBLOCK;
     fcntl(socket_fd, F_SETFL, flags);
 
+    // Prevent broken pipe from crashing the program
+    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
+
     pid_t pid = fork();
     if(pid < 0){
         printf("Failed to fork");
         return 1;
     } else if (pid > 0) {
         // we are in the parent process
-        recieve_messages(socket_fd);
-
+        return recieve_messages(socket_fd);
     } else {
         // we are in the child process
         send_messages(socket_fd);
-    }
-
-    while(1){
-        
     }
 }

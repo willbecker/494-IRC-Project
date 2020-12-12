@@ -1,5 +1,17 @@
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+#include <signal.h>
+#include <time.h>
+#include <unistd.h>
+#define MSG_LENGTH 50
+#define UPDATE_INTERVAL 1000 //number of milliseconds between each update
+#define TIMEOUT_LEN 5
 
 enum msg_type {
     SETNAME = 0x11,
@@ -21,7 +33,8 @@ enum error {
     USER_LIMIT = 0xE4,
     ROOM_LIMIT = 0xE5,
     WRONG_TYPE = 0xE6,
-    WRONG_LENGTH = 0xE7
+    WRONG_LENGTH = 0xE7,
+    TIMEOUT = 0xE8
 };
 
 struct message_header {
