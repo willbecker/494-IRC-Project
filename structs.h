@@ -9,7 +9,8 @@
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
-#define MSG_LENGTH 50
+#define MSG_LENGTH 500
+#define PACKET_LENGTH MSG_LENGTH + 34
 #define UPDATE_INTERVAL 1000 //number of milliseconds between each update
 #define TIMEOUT_LEN 5
 
@@ -34,16 +35,17 @@ enum error {
     ROOM_LIMIT = 0xE5,
     WRONG_TYPE = 0xE6,
     WRONG_LENGTH = 0xE7,
-    TIMEOUT = 0xE8
+    TIMEOUT = 0xE8,
+    USER_QUIT = 0xE9
 };
 
-struct message_header {
+struct packet_header {
     uint8_t type;
     uint32_t length;
 };
 
 struct set_name {
-    struct message_header header;
+    struct packet_header header;
     char name[16];
 };
 

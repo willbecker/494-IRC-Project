@@ -13,7 +13,14 @@ struct user {
     struct timespec last_alive;
 };
 
+struct room {
+    char name[16];
+    struct user *users[CLIENT_MAX];
+};
+
 int check_title(char *title) {
+    if(strcmp(title, "(null)") == 0)
+        return -1;
     int len = strlen(title);
     int is_alphanum = 1;
     if(0 < len < 16){
@@ -31,13 +38,10 @@ int check_title(char *title) {
 
 int keep_alive(struct user *client) {
     char *len = strtok(NULL, ",");
-    char keep_alive_msg[MSG_LENGTH] = {0};
     if(len == NULL){
         return WRONG_LENGTH;
     } else if(atoi(len) == 0) {
-        sprintf(keep_alive_msg, "%i,%i", KEEPALIVE, 0);
         clock_gettime(CLOCK_MONOTONIC, &client->last_alive);
-        write(client->fd, keep_alive_msg, sizeof(keep_alive_msg));
         return 0;
     }
     return WRONG_LENGTH;
@@ -75,6 +79,39 @@ int find_free_slot(struct user* user_list)
     }
     return -1;
 }
+int find_free_pointer_slot(struct user **user_list)
+{
+    int slot = 0;
+    while(slot < CLIENT_MAX){
+        if(user_list[slot] == NULL){
+            return slot;
+        }
+        slot++;
+    }
+    return -1;
+}
+struct room * find_free_room(struct room *room_list)
+{
+    int slot = 0;
+    while(slot < CLIENT_MAX){
+        if(room_list[slot].name[0] == '\0'){
+            return &room_list[slot];
+        }
+        slot++;
+    }
+    return NULL;
+}
+struct room * find_room(struct room *room_list, char *name)
+{
+    int slot = 0;
+    while(slot < CLIENT_MAX){
+        if(strcmp(room_list[slot].name, name) == 0){
+            return &room_list[slot];
+        }
+        slot++;
+    }
+    return NULL;
+}
 
 
 int accept_connections(int socket_fd, struct user* user_list)
@@ -107,21 +144,98 @@ int accept_connections(int socket_fd, struct user* user_list)
     
 }
 
-int disconnect(struct user *user_list, uint8_t error)
+int send_admin_msg(struct user *client, char *msg)
 {
-    printf("User disconnected on slot %i\n", user_list->id - 1);
-    user_list->id = 0;
-    user_list->fd = 0;
-    strcpy(user_list->name, "");
+    char packet[PACKET_LENGTH];
+    sprintf(packet, "%i,%i,%s,%s,%s", SEND_MSG, MSG_LENGTH+32, 
+            "server", "system", msg);
+    write(client->fd, packet, sizeof(packet));
+}
+
+int send_msg(struct user *sender, struct room *room, char *msg)
+{
+    char packet[PACKET_LENGTH];
+    sprintf(packet, "%i,%i,%s,%s,%s", SEND_MSG, MSG_LENGTH+32, 
+            sender->name, room->name, msg);
+    for(int i = 0; i < CLIENT_MAX; i++){
+        if(room->users[i] != NULL && room->users[i]->id > 0){
+            write(room->users[i]->fd, packet, sizeof(packet));
+        }
+    }
+    
+}
+
+int join_room(struct user *client, struct room *room_list){
+    char message[MSG_LENGTH];
+    char *len = strtok(NULL, ",");
+    char *room_name = strtok(NULL, ",");
+    int length;
+    struct room *room;
+    if((length = atoi(len)) != 16){
+        return WRONG_LENGTH;
+    } else if(check_title(room_name) == -1){
+        return BAD_NAME;
+    } else if((room = find_room(room_list, room_name)) != NULL){
+        room->users[find_free_pointer_slot(room->users)] = client; 
+        sprintf(message, "Joined room %s\n", room_name);
+        send_admin_msg(client, message);
+        return 0;
+    } else if((room = find_free_room(room_list)) != NULL){
+        strcpy(room->name, room_name);
+        room->users[find_free_pointer_slot(room->users)] = client; 
+        sprintf(message, "%s not found. Created new room %s\n", room_name, room_name);
+        send_admin_msg(client, message);
+        sprintf(message, "Joined room %s\n", room_name);
+        send_admin_msg(client, message);
+        return 0;
+    } else {
+        sprintf(message, "%s not found. Room limit reached\n", room_name);
+        send_admin_msg(client, message);
+        return 0;
+    }
+}
+
+int upload_msg(struct user *client, struct room *room_list){
+    char message[MSG_LENGTH];
+    char *len = strtok(NULL, ",");
+    char *room_name = strtok(NULL, ",");
+    char *msg = strtok(NULL , ",");
+    int length;
+    struct room *room;
+    if((length = atoi(len)) != MSG_LENGTH+16){
+        return WRONG_LENGTH;
+    } else if(check_title(room_name) == -1){
+        return BAD_NAME;
+    } else if((room = find_room(room_list, room_name)) != NULL){
+        send_msg(client, room, msg);
+        return 0;
+    } else {
+        sprintf(message, "Room %s not found. Cannot send message\n", room_name);
+        send_admin_msg(client, message);
+        return 0;
+    }
+}
+
+int disconnect(struct user *client, uint8_t error)
+{
+    char packet[PACKET_LENGTH];
+    sprintf(packet, "%i,%i,%i", DISCONNECT, 1, error);
+    write(client->fd, packet, sizeof(packet));
+    printf("User disconnected on slot %i\n", client->id - 1);
+    close(client->fd);
+    client->fd = 0;
+    client->id = 0;
+    strcpy(client->name, "");
 }
 
 int main()
 {
     struct sockaddr_in server_addr = {0};
     struct user user_list[CLIENT_MAX] = {0};
+    struct room room_list[CLIENT_MAX] = {0};
     struct timespec start, end, time_taken;
     struct timespec time_since_last_alive;
-    char message[MSG_LENGTH];
+    char packet[PACKET_LENGTH];
 
     // Create socket and assingn it to a file descripter
     int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -161,6 +275,7 @@ int main()
 
     while(1){
         clock_gettime(CLOCK_MONOTONIC, &start); 
+        bzero(packet, sizeof(packet));
 
         // Handle any new incoming connections if they exsist
         struct pollfd fds[1] = {socket_fd, POLLIN, 0};
@@ -168,6 +283,13 @@ int main()
             accept_connections(socket_fd, user_list);
         }
 
+        // Send keep alive packet to each conneted client
+        for(int i = 0; i < CLIENT_MAX; i++){
+            if(user_list[i].id != 0){
+                sprintf(packet, "%i,%i", KEEPALIVE, 0);
+                write(user_list[i].fd, packet, sizeof(packet));
+            }
+        }
 
         // Disconnect any client that has not sent a recent keep 
         // alive massage to the server.
@@ -176,26 +298,36 @@ int main()
                 time_since_last_alive.tv_sec = start.tv_sec 
                                              - user_list[i].last_alive.tv_sec;
                 if(time_since_last_alive.tv_sec >= TIMEOUT_LEN){
-                //    disconnect(&(user_list[i]), TIMEOUT);
+                    disconnect(&(user_list[i]), TIMEOUT);
                 }
             }
         }
 
-        // Handle messages from all clients
+        // Handle packets from all clients
         int error = 0;
+        bzero(packet, sizeof(packet));
         for(int i = 0; i < CLIENT_MAX; i++){
             if(user_list[i].id == i+1){
-                if(read(user_list[i].fd, message, sizeof(message)) != -1
-                   && message != NULL){
-                    switch((uint8_t)atoi(strtok(message, ","))){
+                if(read(user_list[i].fd, packet, sizeof(packet)) != -1
+                   && packet[0] != '\0'){
+                    switch((uint8_t)atoi(strtok(packet, ","))){
                         case KEEPALIVE :
                             error = keep_alive(&user_list[i]);
+                            break;
+                        case DISCONNECT :
+                            error = USER_QUIT;
                             break;
                         case SETNAME :
                             error = set_name(&user_list[i]);
                             break;
+                        case JOIN_ROOM :
+                            error = join_room(&user_list[i], room_list);
+                            break;
+                        case UPLOAD_MSG :
+                            error = upload_msg(&user_list[i], room_list);
+                            break;
                         default :
-                            printf("Recieved message with invalid type from client %i\n", i+1);
+                            printf("Recieved packet with invalid type from client %i\n", i+1);
                     }
                     if(error){
                         disconnect(&user_list[i], error);
